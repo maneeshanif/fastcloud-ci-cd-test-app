@@ -3,13 +3,21 @@ import re
 
 from fastapi import FastAPI, HTTPException, Query
 from fastmcp import Client
-from fastmcp.client.transports import SSETransport
 from pydantic import BaseModel
 
-app = FastAPI()
+from mcp_server import mcp
 
-MCP_SSE_URL = os.getenv("MCP_SSE_URL", "http://127.0.0.1:8001/sse")
 ADDITION_PATTERN = re.compile(r"^\s*(?P<a>[+-]?\d+)\s*\+\s*(?P<b>[+-]?\d+)\s*$")
+MCP_SSE_PATH = "/mcp/sse"
+MCP_PUBLIC_BASE_URL = os.getenv(
+    "MCP_PUBLIC_BASE_URL",
+    "https://fastapi-simple-app.fastapicloud.dev",
+).rstrip("/")
+MCP_SSE_URL = f"{MCP_PUBLIC_BASE_URL}{MCP_SSE_PATH}"
+
+mcp_app = mcp.http_app(path="/sse", transport="sse")
+app = FastAPI(lifespan=mcp_app.lifespan)
+app.mount("/mcp", mcp_app)
 
 
 class AskRequest(BaseModel):
@@ -28,14 +36,14 @@ def parse_addition(query: str) -> tuple[int, int]:
 
 
 async def call_add_tool(a: int, b: int) -> int:
-    client = Client(SSETransport(url=MCP_SSE_URL))
+    client = Client(mcp)
     try:
         async with client:
             result = await client.call_tool("add", {"a": a, "b": b})
     except Exception as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"Could not reach the FastMCP SSE server at {MCP_SSE_URL}.",
+            detail="Could not call the FastMCP addition tool.",
         ) from exc
 
     return result.data
@@ -54,7 +62,7 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "mcp_sse_endpoint": MCP_SSE_URL}
 
 
 @app.get("/test/{item_id}")
@@ -66,11 +74,23 @@ def test_endpoint(item_id: int):
 async def ask_question(request: AskRequest):
     a, b = parse_addition(request.query)
     answer = await call_add_tool(a, b)
-    return {"query": request.query, "tool": "add", "answer": answer}
+    return {
+        "query": request.query,
+        "tool": "add",
+        "transport": "in-memory",
+        "mcp_sse_endpoint": MCP_SSE_URL,
+        "answer": answer,
+    }
 
 
 @app.get("/ask")
 async def ask_question_get(query: str = Query(..., examples=["2 + 2"])):
     a, b = parse_addition(query)
     answer = await call_add_tool(a, b)
-    return {"query": query, "tool": "add", "answer": answer}
+    return {
+        "query": query,
+        "tool": "add",
+        "transport": "in-memory",
+        "mcp_sse_endpoint": MCP_SSE_URL,
+        "answer": answer,
+    }
